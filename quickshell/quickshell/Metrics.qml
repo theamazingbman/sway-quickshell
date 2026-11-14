@@ -76,7 +76,7 @@ BarModule {
         Sep {}
         Seg {
             tag: "RAM"
-            tagColor: Theme.blue
+            tagColor: Theme.primary
             value: Math.round(Sys.mem) + "%"
             valueColor: Sys.mem > 90 ? Theme.red : Theme.fg
         }
