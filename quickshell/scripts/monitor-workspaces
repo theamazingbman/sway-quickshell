@@ -1,0 +1,61 @@
+#!/bin/bash
+# monitor-workspaces — spread the twelve workspaces over the monitors in
+# even blocks, so Super+1 is always the first screen and Super+12 the last:
+# two monitors get 1-6 and 7-12, three get 1-4, 5-8 and 9-12. The first
+# screen is a laptop's own panel, then the rest left to right. One monitor:
+# nothing to do. Workspaces already open move to their screen.
+#
+# Pins of your own win: with any `workspace N output NAME` line in
+# ~/.config/sway/local.conf, this does nothing.
+#
+#   monitor-workspaces          apply once (autostart, every sway reload)
+#   monitor-workspaces --watch  apply again whenever a monitor comes or goes
+
+PINS="${XDG_CONFIG_HOME:-$HOME/.config}/sway/local.conf"
+COUNT=12
+
+apply() {
+    grep -qsE '^[[:space:]]*workspace[[:space:]]+.*[[:space:]]output[[:space:]]' "$PINS" && return 0
+    local -a outs
+    mapfile -t outs < <(swaymsg -t get_outputs -r | python3 -c '
+import json, re, sys
+outs = [o for o in json.load(sys.stdin) if o.get("active")]
+internal = lambda o: re.match(r"(eDP|LVDS|DSI)-", o["name"]) is None
+for o in sorted(outs, key=lambda o: (internal(o), o["rect"]["x"], o["rect"]["y"])):
+    print(o["name"])')
+    local n=${#outs[@]}
+    [ "$n" -gt 1 ] || return 0
+
+    local i cmds=""
+    for ((i = 1; i <= COUNT; i++)); do
+        cmds+="workspace $i output ${outs[$(( (i - 1) * n / COUNT ))]}; "
+    done
+    swaymsg "$cmds" >/dev/null
+
+    # open workspaces on the wrong screen move to theirs; focus comes back
+    local focused ws out want
+    focused=$(swaymsg -t get_workspaces -r | python3 -c '
+import json, sys
+print(next(w["name"] for w in json.load(sys.stdin) if w["focused"]))')
+    while read -r ws out; do
+        [[ $ws =~ ^[0-9]+$ ]] && [ "$ws" -ge 1 ] && [ "$ws" -le "$COUNT" ] || continue
+        want=${outs[$(( (ws - 1) * n / COUNT ))]}
+        [ "$out" = "$want" ] || swaymsg "workspace $ws; move workspace to output $want" >/dev/null
+    done < <(swaymsg -t get_workspaces -r | python3 -c '
+import json, sys
+for w in json.load(sys.stdin): print(w["name"], w["output"])')
+    swaymsg "workspace $focused" >/dev/null
+}
+
+if [ "${1:-}" = --watch ]; then
+    # one watcher per session; output events come in bursts, so wait for
+    # the burst to settle before applying
+    exec 9>"${XDG_RUNTIME_DIR:-/tmp}/sway-monitor-workspaces.lock"
+    flock -n 9 || exit 0
+    swaymsg -t subscribe -m '["output"]' | while read -r _; do
+        while read -r -t 1 _; do :; done
+        apply
+    done
+else
+    apply
+fi

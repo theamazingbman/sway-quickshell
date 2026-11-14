@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+if [ "${1:-}" = restore ]; then
+  image=$(cat "${XDG_CACHE_HOME:-$HOME/.cache}/sway-min03/wallpaper" 2>/dev/null || true)
+else
+  image=${1:-}
+fi
+[ -n "$image" ] && [ -f "$image" ] || exit 0
+# Persist selection for the next Sway login and apply to every active output.
+mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/sway-min03"
+printf '%s\n' "$image" > "${XDG_CACHE_HOME:-$HOME/.cache}/sway-min03/wallpaper"
+pkill -x swaybg 2>/dev/null || true
+swaybg -i "$image" -m fill >/dev/null 2>&1 &

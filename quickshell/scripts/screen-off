@@ -1,0 +1,11 @@
+#!/bin/sh
+# screen-off — power the outputs down now; the next keypress or mouse move
+# brings them back. A one-shot swayidle: one second without input is idle
+# (outputs off), the first input after that is resume (outputs on, and
+# this swayidle ends). The session's swayidle (scripts/idle) keeps running;
+# a bare power-off would stay dark until its 15-minute resume. sway's own
+# power command, not wlopm: under the lock screen sway hides the outputs
+# from other clients.
+IPC="$(dirname "$(readlink -f "$0")")/sway-ipc"
+# shellcheck disable=SC2016  # $PPID must expand in swayidle's own sh -c, not here
+exec swayidle -w timeout 1 "$IPC 'output * power off'" resume "$IPC 'output * power on'; kill \$PPID"

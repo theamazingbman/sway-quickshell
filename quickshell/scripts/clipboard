@@ -1,0 +1,5 @@
+#!/bin/sh
+SHARE="$(dirname "$(dirname "$(readlink -f "$0")")")"
+qs -p "$SHARE/quickshell" ipc call clipboard toggle >/dev/null 2>&1 && exit 0
+pick=$(cliphist list | fuzzel --dmenu --prompt="Clipboard: ") || exit 0
+printf '%s\n' "$pick" | cliphist decode | wl-copy

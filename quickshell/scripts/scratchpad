@@ -1,0 +1,13 @@
+#!/bin/sh
+# scratchpad — a drop-down window: show or hide the one with this app_id,
+# or start it the first time (its rules.conf line floats it, sizes it and
+# moves it to the scratchpad, shown).
+#   scratchpad <app_id> <command...>
+[ $# -ge 2 ] || { echo "usage: scratchpad <app_id> <command...>" >&2; exit 1; }
+IPC="$(dirname "$(readlink -f "$0")")/sway-ipc"
+id=$1
+shift
+if "$IPC" -r -t get_tree | grep -qF "\"app_id\":\"$id\""; then
+    exec "$IPC" "[app_id=\"^$id\$\"] scratchpad show" >/dev/null
+fi
+exec "$@"

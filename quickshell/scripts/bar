@@ -1,0 +1,13 @@
+#!/bin/sh
+SHARE="$(dirname "$(dirname "$(readlink -f "$0")")")"
+P="$SHARE/quickshell"
+cd "$HOME" || cd /
+mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/sway-min03"
+icon_theme=$(gsettings get org.gnome.desktop.interface icon-theme 2>/dev/null | tr -d "'")
+[ -n "$icon_theme" ] && export QS_ICON_THEME="$icon_theme"
+case "${1:-restart}" in
+  start) exec qs -p "$P" -d -n ;;
+  restart) qs -p "$P" kill >/dev/null 2>&1 || true; exec qs -p "$P" -d -n ;;
+  log) exec qs -p "$P" log ;;
+  *) exec qs -p "$P" "$@" ;;
+esac

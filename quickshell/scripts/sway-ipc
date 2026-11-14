@@ -1,0 +1,15 @@
+#!/bin/sh
+# sway-ipc — swaymsg with the socket found when the environment lacks it
+# (a bar restarted from a terminal that predates this sway run).
+# Sockets are sway-ipc.<uid>.<pid>.sock and a crashed run leaves its own
+# behind, so take the one whose pid is a running sway.
+if [ -z "${SWAYSOCK:-}" ] || [ ! -S "$SWAYSOCK" ]; then
+    for s in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/sway-ipc.*.sock; do
+        pid=${s%.sock}; pid=${pid##*.}
+        if [ -S "$s" ] && [ "$(cat "/proc/$pid/comm" 2>/dev/null)" = sway ]; then
+            SWAYSOCK="$s" && export SWAYSOCK
+            break
+        fi
+    done
+fi
+exec swaymsg "$@"

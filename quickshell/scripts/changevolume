@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# changevolume {up|down|mute} — change the volume and show it in a dunst
+# notification; the int:value hint draws dunst's progress bar, styled by
+# its progress_bar_* settings.
+
+VOL_STEP=2
+
+notify_volume() {
+    local vol n icon
+    vol=$(pamixer --get-volume-human)      # "45%", or "muted"
+    if [ "$vol" = muted ]; then
+        vol=Muted n=0 icon=audio-volume-muted
+    else
+        n=${vol%\%}
+        if [ "$n" -le 30 ]; then icon=audio-volume-low
+        elif [ "$n" -le 70 ]; then icon=audio-volume-medium
+        else icon=audio-volume-high
+        fi
+    fi
+    notify-send -a changevolume -u low \
+        -h string:x-canonical-private-synchronous:volume \
+        -h "int:value:$n" \
+        -i "$icon" \
+        -t 2000 \
+        "Volume $vol"
+}
+
+case "$1" in
+    up)   pamixer -u; pamixer -i "$VOL_STEP" --allow-boost ;;
+    down) pamixer -u; pamixer -d "$VOL_STEP" --allow-boost ;;
+    mute) pamixer -t ;;
+    *)
+        echo "Usage: $0 {up|down|mute}" >&2
+        exit 1
+        ;;
+esac
+notify_volume

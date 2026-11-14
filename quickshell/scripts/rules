@@ -1,0 +1,283 @@
+#!/bin/sh
+# rules — ~/.config/sway/rules.conf (for_window and assign lines) as rows
+# for the settings panel's Rules tab (quickshell/RulesPane.qml), and the
+# tab's editor verbs. Rows are tab-separated: section  match  detail  line
+# (match: "appid=kitty-scratch", detail: "floating · workspace 8 · 60%×60%").
+#   rules                    print the rows
+#   rules get N              line N as fields: appid title workspace float
+#                            monitor width height scratch desc (tab-separated)
+#   rules set N APPID TITLE WORKSPACE FLOAT MONITOR WIDTH HEIGHT SCRATCH DESC
+#   rules add SECTION APPID TITLE WORKSPACE FLOAT MONITOR WIDTH HEIGHT SCRATCH DESC
+#                            prints the new line number
+#   rules delete N
+#   rules pick               the open windows: appid, title, command, inner
+#   rules check              the fields' own checks over every rule
+#   rules open N             open rules.conf in the editor at line N
+# A "# text" line right above a rule is its note (the desc field). The
+# lines are written from the fields, which are checked first (sway has no
+# way to test a config without starting itself): a bad one is reported and
+# the file left alone. A Wayland app matches on app_id, an X11 one (through
+# XWayland) on class: a rewrite keeps the line's own, a new rule takes the
+# one an open window with that id has. Actions the editor has no field
+# for stay on the line. A scratchpad rule's key and command are the
+# scripts/scratchpad bind in keybinds.conf (scripts/keybinds).
+C="${XDG_CONFIG_HOME:-$HOME/.config}/sway"
+CONF="$C/rules.conf"
+IPC="$(dirname "$(readlink -f "$0")")/sway-ipc"
+
+# for_window [k="v" ...] action, action  →  F[...] (assign lines too)
+fields_awk='
+function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+function unanchor(v) { sub(/^\^/, "", v); sub(/\$$/, "", v); return v }
+function fields(line,   s, crit, acts, n, a, i, k, v, p) {
+    delete F
+    s = trim(line)
+    if (s !~ /^(for_window|assign)[ \t]*\[/) return 0
+    F["verb"] = substr(s, 1, index(s, "[") - 1); F["verb"] = trim(F["verb"])
+    p = index(s, "]"); if (p == 0) return 0
+    crit = substr(s, index(s, "[") + 1, p - index(s, "[") - 1)
+    acts = trim(substr(s, p + 1))
+    # criteria: key="value" pairs (values may hold spaces)
+    while (match(crit, /[a-z_]+="([^"\\]|\\.)*"/)) {
+        k = substr(crit, RSTART, RLENGTH); crit = substr(crit, RSTART + RLENGTH)
+        v = substr(k, index(k, "=") + 2); v = substr(v, 1, length(v) - 1); k = substr(k, 1, index(k, "=") - 1)
+        if (k == "app_id" || k == "class") { F["appid"] = unanchor(v); F["key"] = k }
+        else if (k == "title") F["title"] = unanchor(v)
+    }
+    if (F["verb"] == "assign") {
+        v = acts; sub(/^(→|output|workspace)[ \t]*/, "", v); sub(/^number[ \t]+/, "", v)
+        if (acts ~ /^output/) F["monitor"] = trim(v); else F["tags"] = trim(v)
+        return 1
+    }
+    n = split(acts, a, ",")
+    F["extra"] = ""
+    for (i = 1; i <= n; i++) {
+        a[i] = trim(a[i])
+        if (a[i] == "floating enable") F["float"] = 1
+        else if (a[i] == "move scratchpad") F["scratch"] = 1
+        else if (a[i] == "scratchpad show" || a[i] == "focus") continue
+        else if (match(a[i], /^resize set (width )?[0-9.]+ ppt (height )?[0-9.]+ ppt$/)) {
+            split(a[i], r, /[ \t]+/)
+            k = 0; for (p = 1; p <= length(r); p++) if (r[p] ~ /^[0-9.]+$/) { if (!k++) F["width"] = r[p] / 100; else F["height"] = r[p] / 100 }
+        }
+        else if (a[i] ~ /^move (container )?(to )?workspace (number )?[0-9]+$/) { v = a[i]; sub(/^.*[^0-9]/, "", v); F["tags"] = v }
+        else if (a[i] ~ /^move (container )?(to )?output /) { v = a[i]; sub(/^.*output[ \t]+/, "", v); F["monitor"] = v }
+        else if (a[i] != "") F["extra"] = F["extra"] (F["extra"] != "" ? ", " : "") a[i]
+    }
+    return 1
+}
+function isheader(s) { return s ~ /^#[ \t]*---/ }
+function isrule(s) { return s ~ /^[ \t]*(for_window|assign)[ \t]*\[/ }
+function hasnote(n) { return (L[n-1] ~ /^#/ && !isheader(L[n-1]) && !isrule(L[n+1])) }'
+
+# what sway would take but not mean, or not take: checked before a write
+validate() {
+    [ -n "$1$2" ] || { echo "a rule needs an app id or a title to match" >&2; return 1; }
+    case "$1$2$5" in *'"'*) echo 'no double quotes in the app id, title or monitor' >&2; return 1 ;; esac
+    for re in "$1" "$2"; do
+        [ -z "$re" ] && continue
+        printf '' | grep -E -- "$re" >/dev/null 2>&1; [ $? -eq 2 ] && { echo "not a valid pattern: $re" >&2; return 1; }
+    done
+    for v in "$6" "$7"; do
+        [ -z "$v" ] && continue
+        case "$v" in *[!0-9.]*|.|"") echo "size $v: a fraction of the screen, like 0.6" >&2; return 1 ;; esac
+        awk -v v="$v" 'BEGIN { exit !(v > 0 && v <= 1) }' || { echo "size $v: between 0 and 1 (a fraction of the screen)" >&2; return 1; }
+    done
+    if [ -n "$3" ]; then
+        case "$3" in *[!0-9]*) echo "workspace $3: a number 1-12" >&2; return 1 ;; esac
+        if [ "$3" -lt 1 ] || [ "$3" -gt 12 ]; then echo "workspace $3: a number 1-12" >&2; return 1; fi
+    fi
+    case "$5" in *[[:space:]]*) echo "monitor $5: one output name, like DP-1" >&2; return 1 ;; esac
+}
+# the criteria key for an app id: what the line had, else class when an
+# open window has it as its X11 class (and no app_id), else app_id
+keyfor() {
+    [ -n "$2" ] && { echo "$2"; return; }
+    if [ -n "$1" ] && "$IPC" -r -t get_tree 2>/dev/null | grep -qF "\"class\":\"$1\""; then echo class; else echo app_id; fi
+}
+# APPID TITLE WORKSPACE FLOAT MONITOR WIDTH HEIGHT SCRATCH KEY EXTRA
+fmt() {
+    awk -v id="$1" -v title="$2" -v ws="$3" -v fl="$4" -v mon="$5" -v w="$6" -v h="$7" -v sc="$8" -v key="$9" -v extra="${10}" '
+    function yn(v) { return (v == "yes" || v == "1" || v == "true") }
+    function pct(v) { v = v * 100; return (v == int(v)) ? v : sprintf("%.1f", v) }
+    BEGIN {
+        crit = ""
+        if (id != "") crit = key "=\"^" id "$\""
+        if (title != "") crit = crit (crit != "" ? " " : "") "title=\"^" title "$\""
+        n = 0
+        if (yn(sc) || yn(fl)) a[++n] = "floating enable"
+        if ((yn(sc) || yn(fl)) && (w != "" || h != "")) a[++n] = "resize set width " pct(w != "" ? w : 0.6) " ppt height " pct(h != "" ? h : 0.6) " ppt"
+        if (ws != "") a[++n] = "move container to workspace number " ws
+        if (mon != "") a[++n] = "move container to output " mon
+        if (extra != "") a[++n] = extra
+        if (yn(sc)) { a[++n] = "move scratchpad"; a[++n] = "scratchpad show" }
+        else if (ws != "") a[++n] = "focus"
+        if (n == 0) a[++n] = "floating disable"
+        out = "for_window [" crit "] " a[1]
+        for (i = 2; i <= n; i++) out = out ", " a[i]
+        print out
+    }'
+}
+# the line N's own criteria key and extra actions, kept by a rewrite
+keep() {
+    awk -v n="$1" -v want="$2" "$fields_awk"'
+        NR == n { if (fields($0)) print F[want]; exit }' "$CONF"
+}
+
+commit() { mv "$1" "$CONF"; }
+
+# the program a terminal is showing: follow first children down from the
+# window's pid, skipping shells; empty when it ends in a shell (a plain
+# terminal) or the window has no children (a GUI app)
+innermost() {
+    pid="$1"; found=""
+    while :; do
+        # the child that has children of its own (the shell under a
+        # terminal, past kitty's kitten helper), else the newest child
+        child=$(awk -v pp="$pid" '
+            { ppid[$1] = $4; if ($4 == pp) kids[++n] = $1 }
+            END { for (i = 1; i <= n; i++) for (q in ppid) if (ppid[q] == kids[i]) { print kids[i]; exit }
+                  if (n) print kids[n] }' /proc/[0-9]*/stat 2>/dev/null)
+        [ -n "$child" ] || break
+        pid="$child"
+        name=$(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline" | sed 's/ $//')
+        # an interpreter running a script is the script (python3 /usr/bin/pulsemixer)
+        case "${name%% *}" in
+            */python*|python*|*/perl|perl|*/ruby|ruby|*/node|node|*/lua*|lua*) name="${name#* }" ;;
+        esac
+        case "${name%% *}" in
+            */bash|bash|*/zsh|zsh|*/fish|fish|*/sh|sh|*/dash|dash) found="" ;;
+            "") ;;
+            *) found="$name" ;;
+        esac
+    done
+    printf '%s\n' "$found"
+}
+
+case "${1:-}" in
+"")
+    [ -f "$CONF" ] || exit 0
+    exec awk "$fields_awk"'
+    { L[NR] = $0 }
+    END {
+        section = "rules"
+        for (i = 1; i <= NR; i++) {
+            if (isheader(L[i])) { s = L[i]; sub(/^#[ \t]*---[ \t]*/, "", s); sub(/[ \t]*(---|:|\().*$/, "", s); section = s; continue }
+            if (!isrule(L[i]) || !fields(L[i])) continue
+            m = ""
+            if ("appid" in F) m = "appid=" F["appid"]
+            else if ("title" in F) m = "title=" F["title"]
+            n = 0; d = ""
+            if (F["scratch"]) d = d (n++ ? " · " : "") "scratchpad"
+            else if (F["float"]) d = d (n++ ? " · " : "") "floating"
+            if ("width" in F || "height" in F) d = d (n++ ? " · " : "") (F["width"] * 100) "%×" (F["height"] * 100) "%"
+            if ("tags" in F) d = d (n++ ? " · " : "") "workspace " F["tags"]
+            if ("monitor" in F) d = d (n++ ? " · " : "") "monitor " F["monitor"]
+            if ("title" in F && "appid" in F) d = d (n++ ? " · " : "") "title " F["title"]
+            if (F["extra"] != "") d = d (n++ ? " · " : "") F["extra"]
+            if (hasnote(i)) { note = L[i-1]; sub(/^#+[ \t]*/, "", note); d = note (n ? "  (" d ")" : "") }
+            printf "%s\t%s\t%s\t%d\n", section, m, d, i
+        }
+    }' "$CONF"
+    ;;
+get)
+    exec awk -v n="${2:?line}" "$fields_awk"'
+    { L[NR] = $0 }
+    END {
+        if (!isrule(L[n]) || !fields(L[n])) exit 1
+        note = ""; if (hasnote(n)) { note = L[n-1]; sub(/^#+[ \t]*/, "", note) }
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", F["appid"], F["title"], F["tags"],
+            (F["scratch"] || F["float"]) ? "yes" : "no", F["monitor"], F["width"], F["height"], F["scratch"] ? "yes" : "no", note
+    }' "$CONF"
+    ;;
+set)
+    n="${2:?line}"; shift 2; validate "$@" || exit 1
+    line=$(fmt "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$(keyfor "$1" "$(keep "$n" key)")" "$(keep "$n" extra)")
+    note="$9"; tmp="$CONF.tmp"
+    # the rule's line moves when its note comes or goes: the new number is printed
+    newline=$(awk -v n="$n" -v l="$line" -v d="$note" "$fields_awk"'
+        { L[NR] = $0 }
+        END {
+            hd = hasnote(n)
+            for (i = 1; i <= NR; i++) {
+                if (i == n - 1 && hd) { if (d != "") print "# " d; continue }
+                if (i == n) { if (!hd && d != "") print "# " d; print l; continue }
+                print L[i]
+            }
+            print n + (hd && d == "" ? -1 : !hd && d != "" ? 1 : 0) > "/dev/stderr"
+        }' "$CONF" 2>&1 >"$tmp")
+    commit "$tmp" || exit 1
+    echo "$newline"
+    ;;
+add)
+    sec="${2:?section}"; shift 2; validate "$@" || exit 1
+    line=$(fmt "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$(keyfor "$1" "")" "")
+    note="$9"; tmp="$CONF.tmp"
+    [ -f "$CONF" ] || : > "$CONF"
+    ins=$(awk -v sec="$sec" '
+        /^#[ \t]*---/ { s = $0; sub(/^#[ \t]*---[ \t]*/, "", s); sub(/[ \t]*(---|:|\().*$/, "", s)
+                       insec = (tolower(s) == tolower(sec)); if (insec) last = NR; next }
+        insec && !/^[ \t]*$/ { last = NR }
+        END { print last + 0 }' "$CONF")
+    extra=0; [ -n "$note" ] && extra=1
+    if [ "$ins" -gt 0 ]; then
+        awk -v n="$ins" -v l="$line" -v d="$note" '{ print } NR == n { if (d != "") print "# " d; print l }' "$CONF" > "$tmp"
+        newline=$((ins + 1 + extra))
+    else
+        { cat "$CONF"; printf '\n# --- %s ---\n' "$sec"; [ -n "$note" ] && printf '# %s\n' "$note"; printf '%s\n' "$line"; } > "$tmp"
+        newline=$(($(wc -l < "$CONF") + 3 + extra))
+    fi
+    commit "$tmp" || exit 1
+    echo "$newline"
+    ;;
+delete)
+    n="${2:?line}"; tmp="$CONF.tmp"
+    awk -v n="$n" "$fields_awk"'
+        { L[NR] = $0 }
+        END { hd = hasnote(n); for (i = 1; i <= NR; i++) { if (i == n || (hd && i == n - 1)) continue; print L[i] } }' "$CONF" > "$tmp"
+    commit "$tmp" || exit 1
+    ;;
+pick)
+    # the open windows, one per line: appid (an X11 window's class), title,
+    # the command that opened it (the process's command line), and for a
+    # terminal the program running inside it (its deepest child that isn't
+    # a shell) — a kitty showing pulsemixer is matched and opened as
+    # pulsemixer, not as every kitty. The bar's own windows are left out.
+    "$IPC" -r -t get_tree 2>/dev/null | python3 -c '
+import json, sys
+def walk(n):
+    kids = n.get("nodes", []) + n.get("floating_nodes", [])
+    if not kids and n.get("type") in ("con", "floating_con") and n.get("pid"):
+        a = n.get("app_id") or (n.get("window_properties") or {}).get("class") or ""
+        if a and a != "org.quickshell":
+            print("%s\t%s\t%s" % (a, (n.get("name") or "").replace("\t", " "), n["pid"]))
+    for k in kids: walk(k)
+walk(json.load(sys.stdin))' |
+    while IFS="$(printf '\t')" read -r a t p; do
+        cmd=""; inner=""
+        if [ -n "$p" ] && [ -r "/proc/$p/cmdline" ]; then
+            cmd=$(tr '\0' ' ' < "/proc/$p/cmdline" | sed 's/ $//')
+            inner=$(innermost "$p")
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$a" "$t" "$cmd" "$inner"
+    done
+    ;;
+check)
+    [ -f "$CONF" ] || exit 0
+    # fields split on \037: a tab separator would let `read` merge empty ones
+    awk "$fields_awk"'
+        { L[NR] = $0 }
+        END { for (i = 1; i <= NR; i++) if (isrule(L[i]) && fields(L[i])) printf "%d\037%s\037%s\037%s\037%s\037%s\037%s\n", i, F["appid"], F["title"], F["tags"], F["monitor"], F["width"], F["height"] }' "$CONF" | {
+    bad=0
+    while IFS="$(printf '\037')" read -r n a t ws mon w h; do
+        msg=$(validate "$a" "$t" "$ws" "" "$mon" "$w" "$h" 2>&1) || { echo "line $n: $msg" >&2; bad=1; }
+    done
+    exit $bad
+    }
+    ;;
+open)
+    if command -v geany >/dev/null 2>&1; then exec geany --line="${2:-1}" "$CONF"; fi
+    exec xdg-open "$CONF"
+    ;;
+*)  echo "usage: rules [get N | set ... | add ... | delete N | pick | check | open N]" >&2; exit 2 ;;
+esac

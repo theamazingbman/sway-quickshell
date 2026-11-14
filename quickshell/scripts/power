@@ -1,0 +1,10 @@
+#!/bin/sh
+SHARE="$(dirname "$(dirname "$(readlink -f "$0")")")"
+qs -p "$SHARE/quickshell" ipc call power toggle >/dev/null 2>&1 && exit 0
+chosen=$(printf '%s\n' "Cancel" "Logout" "Shutdown" "Reboot" | fuzzel --dmenu --prompt="Power: ")
+case "$chosen" in
+  Logout) "$SHARE/scripts/sway-ipc" exit ;;
+  Shutdown) systemctl poweroff ;;
+  Reboot) systemctl reboot ;;
+  *) exit 0 ;;
+esac
