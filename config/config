@@ -1,0 +1,81 @@
+# sway config
+##################################
+###### Terry's Sway Config #######
+##################################
+
+### Variables
+set $mod Mod4
+# Home row direction keys, like vim
+set $left h
+set $down j
+set $up k
+set $right l
+set $term foot
+set $config_dir ~/.config/sway
+set $menu fuzzel --config ~/.config/sway/fuzzel/fuzzel.ini
+
+### Output configuration
+# Wallpaper is selected in Quickshell; swaybg restores the last selected image.
+
+# For multiple monitors:
+# output HDMI-A-1 resolution 1920x1080 position 1920,0
+
+# HiDPI / 4K: sway defaults to scale 1, so type is tiny on a 4K screen.
+# Uncomment to scale the whole display — fonts, bar, cursor, and XWayland
+# apps all follow it. Fractional values like 1.5 work too (unlike X11).
+# output * scale 2
+
+### Idle configuration
+# Idle policy and the Quickshell lock screen are started by autostart.sh.
+
+### Input configuration
+input type:touchpad {
+    tap enabled
+    dwt enabled
+    natural_scroll enabled
+    middle_emulation enabled
+}
+
+# Specific Apple Touchpad (use if touchpad config above does not work)
+# Change input name to actual touchpad device name
+#input "1452:610:bcm5974" {
+       # dwt enabled
+       # tap enabled
+       # natural_scroll enabled
+       # middle_emulation enabled
+#}
+
+input type:keyboard {
+    xkb_numlock enabled
+    repeat_delay 300
+    repeat_rate 50
+}
+
+input type:pointer {
+       natural_scroll enabled
+}
+
+### Appearance
+font pango:Lilex Nerd Font Mono 11
+
+# Quickshell uses a fixed palette; no theme-switching files are loaded.
+
+# class                 border   backgr  text    indicator child_border
+#client.focused          $barbie  $cyan   $gray   $blue     $barbie
+#client.focused_inactive $gray    $bg     $fg     $bg       $gray
+#client.unfocused        $gray    $bg     $fg     $bg       $gray
+#client.urgent           $blue    $blue   $bg     $blue     $blue
+
+### Includes
+include $config_dir/workspaces.conf
+include ~/.local/state/sway-min03/tweaks.conf
+include ~/.local/state/sway-min03/outputs.conf
+include $config_dir/rules.conf
+include $config_dir/keybinds.conf
+
+### Autostart
+exec $config_dir/scripts/autostart.sh
+
+#include /etc/sway/config.d/*
+
+include $config_dir/local.conf
